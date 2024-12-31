@@ -1,0 +1,268 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Motion Sync Game</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f0f0f0;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .controls {
+            margin: 20px 0;
+        }
+        .slider-container {
+            margin: 15px 0;
+        }
+        .slider-container label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        .slider {
+            width: 100%;
+        }
+        .status {
+            text-align: center;
+            font-size: 1.2em;
+            margin: 10px 0;
+        }
+        .sync-meter {
+            height: 20px;
+            background: #eee;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .sync-value {
+            height: 100%;
+            background: #4CAF50;
+            transition: width 0.2s;
+        }
+        button {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1em;
+            width: 100%;
+            margin: 10px 0;
+        }
+        button:disabled {
+            background: #ccc;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Motion Sync Game</h1>
+        
+        <div class="controls">
+            <div class="slider-container">
+                <label for="cycle-duration">Cycle Duration (seconds): <span id="duration-value">10</span></label>
+                <input type="range" id="cycle-duration" class="slider" min="5" max="20" value="10" step="1">
+            </div>
+            
+            <div class="slider-container">
+                <label for="volume">Volume: <span id="volume-value">50</span>%</label>
+                <input type="range" id="volume" class="slider" min="0" max="100" value="50">
+            </div>
+
+
+            <button id="start-button">Start Game</button>
+            <button id="stop-button" disabled>Stop Game</button>
+        </div>
+
+
+        <div class="status" id="status">Press Start to begin</div>
+        
+        <div class="sync-meter">
+            <div class="sync-value" id="sync-indicator" style="width: 100%"></div>
+        </div>
+    </div>
+
+
+    <script>
+        let audioContext;
+        let oscillator;
+        let gainNode;
+        let isPlaying = false;
+        let startTime;
+        let cycleDuration = 10;
+        let volume = 0.5;
+        let syncScore = 1.0;
+
+
+        // Setup UI elements
+        const startButton = document.getElementById('start-button');
+        const stopButton = document.getElementById('stop-button');
+        const cycleSlider = document.getElementById('cycle-duration');
+        const volumeSlider = document.getElementById('volume');
+        const statusElement = document.getElementById('status');
+        const syncIndicator = document.getElementById('sync-indicator');
+
+
+        function initAudio() {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            oscillator = audioContext.createOscillator();
+            gainNode = audioContext.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            oscillator.type = 'sine';
+            gainNode.gain.value = volume;
+        }
+
+
+        function updateFrequency(time) {
+            const elapsed = time - startTime;
+            const phase = (elapsed % cycleDuration) / cycleDuration;
+            const frequency = 220 + Math.sin(phase * 2 * Math.PI) * 110;
+            oscillator.frequency.setValueAtTime(frequency, time);
+            return phase;
+        }
+
+
+        function updateSync(phase, acceleration) {
+            // Calculate expected acceleration based on the sine wave phase
+            const expectedAccel = Math.sin(phase * 2 * Math.PI);
+            
+            // Get actual acceleration (normalized)
+            const actualAccel = acceleration / 5; // Normalize to roughly -1 to 1 range
+            
+            // Calculate sync score (1 = perfect sync, 0 = completely out of sync)
+            const difference = Math.abs(expectedAccel - actualAccel);
+            syncScore = Math.max(0, 1 - difference);
+            
+            // Update volume based on sync score
+            gainNode.gain.value = volume * (0.3 + 0.7 * syncScore);
+            
+            // Update visual indicator
+            syncIndicator.style.width = `${syncScore * 100}%`;
+            
+            // Update status message
+            if (syncScore > 0.8) {
+                statusElement.textContent = "Perfect sync!";
+            } else if (syncScore > 0.5) {
+                statusElement.textContent = "Getting there...";
+            } else {
+                statusElement.textContent = "Try to match the tone's rhythm";
+            }
+        }
+
+
+        function startGame() {
+            if (!audioContext) initAudio();
+            
+            // Request accelerometer permission and start monitoring
+            if (typeof DeviceMotionEvent.requestPermission === 'function') {
+                DeviceMotionEvent.requestPermission()
+                    .then(permissionState => {
+                        if (permissionState === 'granted') {
+                            initializeGame();
+                        } else {
+                            statusElement.textContent = 'Accelerometer permission denied';
+                        }
+                    })
+                    .catch(console.error);
+            } else {
+                initializeGame();
+            }
+        }
+
+
+        function initializeGame() {
+            startTime = audioContext.currentTime;
+            oscillator.start();
+            isPlaying = true;
+            
+            startButton.disabled = true;
+            stopButton.disabled = false;
+
+
+            // Setup motion monitoring
+            window.addEventListener('devicemotion', handleMotion);
+
+
+            // Start the game loop
+            gameLoop();
+        }
+
+
+        function gameLoop() {
+            if (!isPlaying) return;
+
+
+            const currentTime = audioContext.currentTime;
+            const phase = updateFrequency(currentTime);
+            
+            requestAnimationFrame(gameLoop);
+        }
+
+
+        function handleMotion(event) {
+            if (!isPlaying) return;
+            
+            const acceleration = event.acceleration;
+            if (!acceleration) return;
+
+
+            // Use the total acceleration magnitude
+            const totalAccel = Math.sqrt(
+                Math.pow(acceleration.x, 2) + 
+                Math.pow(acceleration.y, 2) + 
+                Math.pow(acceleration.z, 2)
+            );
+
+
+            const currentTime = audioContext.currentTime;
+            const phase = ((currentTime - startTime) % cycleDuration) / cycleDuration;
+            updateSync(phase, totalAccel);
+        }
+
+
+        function stopGame() {
+            if (oscillator) {
+                oscillator.stop();
+                oscillator.disconnect();
+                oscillator = null;
+            }
+            isPlaying = false;
+            window.removeEventListener('devicemotion', handleMotion);
+            
+            startButton.disabled = false;
+            stopButton.disabled = true;
+            statusElement.textContent = 'Game stopped';
+        }
+
+
+        // Event Listeners
+        startButton.addEventListener('click', startGame);
+        stopButton.addEventListener('click', stopGame);
+        
+        cycleSlider.addEventListener('input', (e) => {
+            cycleDuration = parseInt(e.target.value);
+            document.getElementById('duration-value').textContent = cycleDuration;
+        });
+
+
+        volumeSlider.addEventListener('input', (e) => {
+            volume = parseInt(e.target.value) / 100;
+            document.getElementById('volume-value').textContent = e.target.value;
+            if (gainNode) gainNode.gain.value = volume;
+        });
+    </script>
+</body>
+</html>
