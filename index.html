@@ -1,8 +1,8 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Motion Sync Game</title>
+    <title>Tilt Sync Game</title>
     <style>
         body {
             font-family: system-ui, -apple-system, sans-serif;
@@ -48,6 +48,11 @@
             background: #4CAF50;
             transition: width 0.2s;
         }
+        .tilt-value {
+            text-align: center;
+            font-size: 1.1em;
+            margin: 10px 0;
+        }
         button {
             background: #2563eb;
             color: white;
@@ -62,16 +67,24 @@
         button:disabled {
             background: #ccc;
         }
+        .phone-visualization {
+            width: 120px;
+            height: 8px;
+            background: #333;
+            margin: 20px auto;
+            transform-origin: center;
+            transition: transform 0.1s;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Motion Sync Game</h1>
+        <h1>Tilt Sync Game</h1>
         
         <div class="controls">
             <div class="slider-container">
-                <label for="cycle-duration">Cycle Duration (seconds): <span id="duration-value">10</span></label>
-                <input type="range" id="cycle-duration" class="slider" min="5" max="20" value="10" step="1">
+                <label for="cycle-duration">Half Cycle Duration (seconds): <span id="duration-value">5</span></label>
+                <input type="range" id="cycle-duration" class="slider" min="2" max="10" value="5" step="1">
             </div>
             
             <div class="slider-container">
@@ -79,19 +92,18 @@
                 <input type="range" id="volume" class="slider" min="0" max="100" value="50">
             </div>
 
-
             <button id="start-button">Start Game</button>
             <button id="stop-button" disabled>Stop Game</button>
         </div>
 
-
-        <div class="status" id="status">Press Start to begin</div>
+        <div class="phone-visualization" id="phone-indicator"></div>
+        <div class="status" id="status">Hold phone flat and press Start</div>
+        <div class="tilt-value" id="tilt-value">Tilt: 0°</div>
         
         <div class="sync-meter">
             <div class="sync-value" id="sync-indicator" style="width: 100%"></div>
         </div>
     </div>
-
 
     <script>
         let audioContext;
@@ -99,19 +111,18 @@
         let gainNode;
         let isPlaying = false;
         let startTime;
-        let cycleDuration = 10;
+        let halfCycleDuration = 5;
         let volume = 0.5;
         let syncScore = 1.0;
 
-
-        // Setup UI elements
         const startButton = document.getElementById('start-button');
         const stopButton = document.getElementById('stop-button');
         const cycleSlider = document.getElementById('cycle-duration');
         const volumeSlider = document.getElementById('volume');
         const statusElement = document.getElementById('status');
         const syncIndicator = document.getElementById('sync-indicator');
-
+        const tiltValueElement = document.getElementById('tilt-value');
+        const phoneIndicator = document.getElementById('phone-indicator');
 
         function initAudio() {
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -125,32 +136,30 @@
             gainNode.gain.value = volume;
         }
 
-
         function updateFrequency(time) {
             const elapsed = time - startTime;
-            const phase = (elapsed % cycleDuration) / cycleDuration;
+            const fullCycleDuration = halfCycleDuration * 2;
+            const phase = (elapsed % fullCycleDuration) / fullCycleDuration;
             const frequency = 220 + Math.sin(phase * 2 * Math.PI) * 110;
             oscillator.frequency.setValueAtTime(frequency, time);
             return phase;
         }
 
-
-        function updateSync(phase, acceleration) {
-            // Calculate expected acceleration based on the sine wave phase
-            const expectedAccel = Math.sin(phase * 2 * Math.PI);
+        function updateSync(phase, tiltAngle) {
+            // Expected tilt based on the sine wave phase (-45 to 45 degrees)
+            const expectedTilt = Math.sin(phase * 2 * Math.PI) * 45;
             
-            // Get actual acceleration (normalized)
-            const actualAccel = acceleration / 5; // Normalize to roughly -1 to 1 range
-            
-            // Calculate sync score (1 = perfect sync, 0 = completely out of sync)
-            const difference = Math.abs(expectedAccel - actualAccel);
-            syncScore = Math.max(0, 1 - difference);
+            // Calculate sync score based on how close the actual tilt is to expected
+            const difference = Math.abs(expectedTilt - tiltAngle);
+            syncScore = Math.max(0, 1 - (difference / 90));
             
             // Update volume based on sync score
             gainNode.gain.value = volume * (0.3 + 0.7 * syncScore);
             
-            // Update visual indicator
+            // Update visual indicators
             syncIndicator.style.width = `${syncScore * 100}%`;
+            tiltValueElement.textContent = `Tilt: ${tiltAngle.toFixed(1)}°`;
+            phoneIndicator.style.transform = `rotate(${tiltAngle}deg)`;
             
             // Update status message
             if (syncScore > 0.8) {
@@ -158,22 +167,20 @@
             } else if (syncScore > 0.5) {
                 statusElement.textContent = "Getting there...";
             } else {
-                statusElement.textContent = "Try to match the tone's rhythm";
+                statusElement.textContent = "Tilt phone back and forth with the tone";
             }
         }
-
 
         function startGame() {
             if (!audioContext) initAudio();
             
-            // Request accelerometer permission and start monitoring
             if (typeof DeviceMotionEvent.requestPermission === 'function') {
                 DeviceMotionEvent.requestPermission()
                     .then(permissionState => {
                         if (permissionState === 'granted') {
                             initializeGame();
                         } else {
-                            statusElement.textContent = 'Accelerometer permission denied';
+                            statusElement.textContent = 'Motion sensor permission denied';
                         }
                     })
                     .catch(console.error);
@@ -181,7 +188,6 @@
                 initializeGame();
             }
         }
-
 
         function initializeGame() {
             startTime = audioContext.currentTime;
@@ -191,47 +197,39 @@
             startButton.disabled = true;
             stopButton.disabled = false;
 
-
-            // Setup motion monitoring
             window.addEventListener('devicemotion', handleMotion);
-
-
-            // Start the game loop
             gameLoop();
         }
 
-
         function gameLoop() {
             if (!isPlaying) return;
-
-
             const currentTime = audioContext.currentTime;
-            const phase = updateFrequency(currentTime);
-            
+            updateFrequency(currentTime);
             requestAnimationFrame(gameLoop);
         }
-
 
         function handleMotion(event) {
             if (!isPlaying) return;
             
-            const acceleration = event.acceleration;
-            if (!acceleration) return;
+            const gravity = event.accelerationIncludingGravity;
+            if (!gravity) return;
 
-
-            // Use the total acceleration magnitude
-            const totalAccel = Math.sqrt(
-                Math.pow(acceleration.x, 2) + 
-                Math.pow(acceleration.y, 2) + 
-                Math.pow(acceleration.z, 2)
-            );
-
+            // Calculate tilt angle from gravity
+            // When phone is flat, y ≈ -9.8
+            // When tilted 90°, y ≈ 0 and (x or z) ≈ -9.8
+            const y = gravity.y;
+            const z = gravity.z;
+            
+            // Calculate tilt angle in degrees
+            // arctangent of z/y gives us the angle
+            const tiltAngle = Math.atan2(z, -y) * (180 / Math.PI);
 
             const currentTime = audioContext.currentTime;
-            const phase = ((currentTime - startTime) % cycleDuration) / cycleDuration;
-            updateSync(phase, totalAccel);
+            const fullCycleDuration = halfCycleDuration * 2;
+            const phase = ((currentTime - startTime) % fullCycleDuration) / fullCycleDuration;
+            
+            updateSync(phase, tiltAngle);
         }
-
 
         function stopGame() {
             if (oscillator) {
@@ -245,18 +243,16 @@
             startButton.disabled = false;
             stopButton.disabled = true;
             statusElement.textContent = 'Game stopped';
+            phoneIndicator.style.transform = 'rotate(0deg)';
         }
 
-
-        // Event Listeners
         startButton.addEventListener('click', startGame);
         stopButton.addEventListener('click', stopGame);
         
         cycleSlider.addEventListener('input', (e) => {
-            cycleDuration = parseInt(e.target.value);
-            document.getElementById('duration-value').textContent = cycleDuration;
+            halfCycleDuration = parseInt(e.target.value);
+            document.getElementById('duration-value').textContent = halfCycleDuration;
         });
-
 
         volumeSlider.addEventListener('input', (e) => {
             volume = parseInt(e.target.value) / 100;
