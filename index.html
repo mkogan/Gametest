@@ -35,6 +35,7 @@
             text-align: center;
             font-size: 1.2em;
             margin: 10px 0;
+            min-height: 3em;
         }
         .sync-meter {
             height: 20px;
@@ -52,6 +53,19 @@
             text-align: center;
             font-size: 1.1em;
             margin: 10px 0;
+        }
+        .calibration-progress {
+            height: 4px;
+            background: #eee;
+            margin: 10px 0;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .calibration-bar {
+            height: 100%;
+            background: #2563eb;
+            width: 0%;
+            transition: width 0.1s;
         }
         button {
             background: #2563eb;
@@ -74,6 +88,12 @@
             margin: 20px auto;
             transform-origin: center;
             transition: transform 0.1s;
+        }
+        .range-indicator {
+            text-align: center;
+            font-size: 0.9em;
+            color: #666;
+            margin: 5px 0;
         }
     </style>
 </head>
@@ -99,6 +119,11 @@
         <div class="phone-visualization" id="phone-indicator"></div>
         <div class="status" id="status">Hold phone flat and press Start</div>
         <div class="tilt-value" id="tilt-value">Tilt: 0°</div>
+        <div class="range-indicator" id="range-indicator"></div>
+        
+        <div class="calibration-progress">
+            <div class="calibration-bar" id="calibration-progress"></div>
+        </div>
         
         <div class="sync-meter">
             <div class="sync-value" id="sync-indicator" style="width: 100%"></div>
@@ -114,6 +139,13 @@
         let halfCycleDuration = 5;
         let volume = 0.5;
         let syncScore = 1.0;
+        
+        // Calibration variables
+        let isCalibrating = false;
+        let calibrationCycles = 3;
+        let minTilt = Infinity;
+        let maxTilt = -Infinity;
+        let calibrationStartTime;
 
         const startButton = document.getElementById('start-button');
         const stopButton = document.getElementById('stop-button');
@@ -123,6 +155,8 @@
         const syncIndicator = document.getElementById('sync-indicator');
         const tiltValueElement = document.getElementById('tilt-value');
         const phoneIndicator = document.getElementById('phone-indicator');
+        const calibrationProgress = document.getElementById('calibration-progress');
+        const rangeIndicator = document.getElementById('range-indicator');
 
         function initAudio() {
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -145,30 +179,68 @@
             return phase;
         }
 
+        function getNormalizedTilt(tiltAngle) {
+            if (maxTilt === minTilt) return 0;
+            return (tiltAngle - minTilt) / (maxTilt - minTilt);
+        }
+
         function updateSync(phase, tiltAngle) {
-            // Expected tilt based on the sine wave phase (-45 to 45 degrees)
-            const expectedTilt = Math.sin(phase * 2 * Math.PI) * 45;
+            // During calibration, just track min/max
+            if (isCalibrating) {
+                minTilt = Math.min(minTilt, tiltAngle);
+                maxTilt = Math.max(maxTilt, tiltAngle);
+                
+                const elapsed = audioContext.currentTime - calibrationStartTime;
+                const fullCycleDuration = halfCycleDuration * 2;
+                const cyclesCompleted = elapsed / fullCycleDuration;
+                
+                const progressPercent = Math.min((cyclesCompleted / calibrationCycles) * 100, 100);
+                calibrationProgress.style.width = `${progressPercent}%`;
+                
+                statusElement.textContent = `Calibrating: Tilt phone back and forth naturally (${Math.ceil(calibrationCycles - cyclesCompleted)} cycles remaining)`;
+                
+                if (cyclesCompleted >= calibrationCycles) {
+                    isCalibrating = false;
+                    statusElement.textContent = "Calibration complete! Now match the rhythm";
+                    rangeIndicator.textContent = `Calibrated range: ${minTilt.toFixed(1)}° to ${maxTilt.toFixed(1)}°`;
+                }
+                
+                // During calibration, always return good sync score
+                return 1;
+            }
+
+            // After calibration, compare normalized tilt to expected
+            const normalizedTilt = getNormalizedTilt(tiltAngle);
+            const expectedTilt = (Math.sin(phase * 2 * Math.PI) + 1) / 2; // 0 to 1
             
-            // Calculate sync score based on how close the actual tilt is to expected
-            const difference = Math.abs(expectedTilt - tiltAngle);
-            syncScore = Math.max(0, 1 - (difference / 90));
+            // Calculate sync score based on how close the normalized tilt is to expected
+            const difference = Math.abs(expectedTilt - normalizedTilt);
+            return Math.max(0, 1 - difference);
+        }
+
+        function handleMotion(event) {
+            if (!isPlaying) return;
             
-            // Update volume based on sync score
-            gainNode.gain.value = volume * (0.3 + 0.7 * syncScore);
+            const gravity = event.accelerationIncludingGravity;
+            if (!gravity) return;
+
+            const y = gravity.y;
+            const z = gravity.z;
+            const tiltAngle = Math.atan2(z, -y) * (180 / Math.PI);
+
+            const currentTime = audioContext.currentTime;
+            const fullCycleDuration = halfCycleDuration * 2;
+            const phase = ((currentTime - startTime) % fullCycleDuration) / fullCycleDuration;
             
-            // Update visual indicators
+            syncScore = updateSync(phase, tiltAngle);
+            
+            // Update visual feedback
             syncIndicator.style.width = `${syncScore * 100}%`;
             tiltValueElement.textContent = `Tilt: ${tiltAngle.toFixed(1)}°`;
             phoneIndicator.style.transform = `rotate(${tiltAngle}deg)`;
             
-            // Update status message
-            if (syncScore > 0.8) {
-                statusElement.textContent = "Perfect sync!";
-            } else if (syncScore > 0.5) {
-                statusElement.textContent = "Getting there...";
-            } else {
-                statusElement.textContent = "Tilt phone back and forth with the tone";
-            }
+            // Update volume based on sync score
+            gainNode.gain.value = volume * (0.3 + 0.7 * syncScore);
         }
 
         function startGame() {
@@ -191,11 +263,18 @@
 
         function initializeGame() {
             startTime = audioContext.currentTime;
+            calibrationStartTime = startTime;
+            isCalibrating = true;
+            minTilt = Infinity;
+            maxTilt = -Infinity;
+            
             oscillator.start();
             isPlaying = true;
             
             startButton.disabled = true;
             stopButton.disabled = false;
+            calibrationProgress.style.width = '0%';
+            rangeIndicator.textContent = '';
 
             window.addEventListener('devicemotion', handleMotion);
             gameLoop();
@@ -208,29 +287,6 @@
             requestAnimationFrame(gameLoop);
         }
 
-        function handleMotion(event) {
-            if (!isPlaying) return;
-            
-            const gravity = event.accelerationIncludingGravity;
-            if (!gravity) return;
-
-            // Calculate tilt angle from gravity
-            // When phone is flat, y ≈ -9.8
-            // When tilted 90°, y ≈ 0 and (x or z) ≈ -9.8
-            const y = gravity.y;
-            const z = gravity.z;
-            
-            // Calculate tilt angle in degrees
-            // arctangent of z/y gives us the angle
-            const tiltAngle = Math.atan2(z, -y) * (180 / Math.PI);
-
-            const currentTime = audioContext.currentTime;
-            const fullCycleDuration = halfCycleDuration * 2;
-            const phase = ((currentTime - startTime) % fullCycleDuration) / fullCycleDuration;
-            
-            updateSync(phase, tiltAngle);
-        }
-
         function stopGame() {
             if (oscillator) {
                 oscillator.stop();
@@ -238,12 +294,15 @@
                 oscillator = null;
             }
             isPlaying = false;
+            isCalibrating = false;
             window.removeEventListener('devicemotion', handleMotion);
             
             startButton.disabled = false;
             stopButton.disabled = true;
             statusElement.textContent = 'Game stopped';
             phoneIndicator.style.transform = 'rotate(0deg)';
+            calibrationProgress.style.width = '0%';
+            rangeIndicator.textContent = '';
         }
 
         startButton.addEventListener('click', startGame);
